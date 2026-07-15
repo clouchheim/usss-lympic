@@ -29,6 +29,10 @@ COMMON_ENDPOINTS = {
     "event_profiles": "/event/{eId}/profile",
     "event_datasets": "/event/{eId}/dataset",
     "event_dataset_fields": "/event/{eId}/dataset/field",
+    "event_list": "/event",
+    "event_profiles": "/event/{eId}/profile",
+    "profile_event_timing": "/profile/{pId}/event/{eId}/timing",
+    "export_event_timing_excel": "/event/{eId}/timing/export",
 }
 
 # Endpoints specific to each module type, keyed by the `module` value
@@ -37,21 +41,22 @@ MODULE_ENDPOINTS = {
     "event:timing": {
         "timing_devices": "/event/{eId}/timing/device",
         "timing_groups": "/event/{eId}/timing/group",
+        # Add one with eId and pId
     },
     "event:alpine-skiing": {
         "alpine_devices": "/event/{eId}/alpine-skiing/device",
         "alpine_groups": "/event/{eId}/alpine-skiing/group",
-    },
-    "event:competition": {
-        "competition_categories": "/event/{eId}/competition/category",
-        "competition_registrations": "/event/{eId}/competition/registration",
-        "competition_groups": "/event/{eId}/competition/group",
+        "alpine_event_profile" : "/profile/{pId}/event/{eId}/alpine-skiing",
+        "alpine_event_profile_stats" : "/profile/{pId}/module/event/alpine-skiing/statistic",
     },
     "event:motion": {
         "motion_indicators": "/event/{eId}/motion/performance-indicator",
+        "profile_event_motion" : "/profile/{pId}/event/{eId}/motion",
     },
     "event:video": {
         "videos": "/event/{eId}/video/video",
+        "profile_video": "/profile/{pId}/event/{eId}/video",
+        # Add download video once I get a vId /event/{eId}/video/video/{vId}/resolution/original
     },
     "event:weather": {
         "weather_measurements": "/event/{eId}/weather/measurement",
@@ -99,12 +104,14 @@ def fetch(client, name, path, **path_params):
 
 def main():
     event_id = os.environ["LYMPIK_EVENT_ID"]
+    profile_id = os.environ["LYMPIK_PID"]
+    api_key = os.environ["LYMPIK_API_KEY"]
     client = LympikClient()
 
     print(f"Fetching samples for event {event_id}")
 
     for name, path in COMMON_ENDPOINTS.items():
-        fetch(client, name, path, eId=event_id)
+        fetch(client, name, path, eId=event_id, pId=profile_id)
 
     event_detail = json.loads((SAMPLES_DIR / "event_detail.json").read_text())
     module = event_detail.get("module")
@@ -112,7 +119,7 @@ def main():
 
     module_endpoints = MODULE_ENDPOINTS.get(module, {})
     for name, path in module_endpoints.items():
-        fetch(client, name, path, eId=event_id)
+        fetch(client, name, path, eId=event_id, pId=profile_id)
 
     group_endpoint_name = GROUP_ENDPOINT_BY_MODULE.get(module)
     edge_path = EDGE_PATH_BY_MODULE.get(module)
@@ -122,7 +129,7 @@ def main():
         for group in sample_groups:
             gid = group.get("id")
             if gid:
-                fetch(client, f"{group_endpoint_name}_{gid}_edges", edge_path, eId=event_id, gId=gid)
+                fetch(client, f"{group_endpoint_name}_{gid}_edges", edge_path, eId=event_id, pId=profile_id, gId=gid)
 
     print(f"\nDone. Inspect the payloads under {SAMPLES_DIR}/")
 
