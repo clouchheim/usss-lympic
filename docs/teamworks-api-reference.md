@@ -106,6 +106,59 @@ Row format — `rows` supports multiple rows for forms that allow it:
 exactly match the field name from the AMS form builder (case-sensitive). To retrieve
 exact field names: `GET /api/v3/forms/{form_type}/{form_id}`.
 
+## v1: Bulk Import Events — `/api/v1/eventsimport`
+
+**Purpose**: submits many events (potentially for many different users) in one call,
+via a working sample rather than a formal published schema.
+
+- **Endpoint**: `POST /api/v1/eventsimport`
+- **Auth**: HTTP Basic (AMS username/password)
+- **Required query params**: `informat=json`, `format=json`
+- **Optional header**: `X-APP-ID: <your integration's identifier>`
+
+Request body:
+```json
+{
+  "events": [
+    {
+      "formName": "My Event Form",
+      "startDate": "01/04/2026",
+      "startTime": "6:45 AM",
+      "finishDate": "01/04/2026",
+      "finishTime": "7:45 AM",
+      "userId": { "userId": 1009 },
+      "rows": [ { "row": 0, "pairs": [ { "key": "Field Name", "value": "Value" } ] } ]
+    }
+  ]
+}
+```
+Each item in `events` has the same shape as a single `eventimport` call (minus the
+top-level `formName`/`startDate`/etc. wrapping — those live *inside* each event object
+here, not as siblings of `events`).
+
+Response:
+```json
+{
+  "result": { "state": "SUCCESSFULLY_IMPORTED" },
+  "eventImportResultForForm": [
+    { "eventImportResults": { "ids": [123456, 123457] } }
+  ]
+}
+```
+- Check `result.state == "SUCCESSFULLY_IMPORTED"` — same allowlist rule as the
+  singular endpoint, and same HTTP-200-on-failure behavior.
+- `eventImportResultForForm` is one entry **per form** referenced in the batch — index
+  `[0]` is only correct when every event in that batch targets the same form.
+- `eventImportResultForForm[0].eventImportResults.ids` is a flat list of resulting
+  event ids, in the same order as the `events` you submitted.
+- **All-or-nothing per batch**: a single malformed event fails the *entire* batch, and
+  the response does not identify which one. A working integration should catch a
+  batch failure and retry its events individually to isolate the culprit.
+- Recommended batch size to start with: 25 (Teamworks' own sample — "start small,
+  increase only after measuring").
+- Sort events chronologically (oldest first) before batching, to minimize
+  re-triggering any historical calculations on the AMS side.
+
 ## Practical notes
 
 - **Creating new objects**: use `{"id": -1}`. Don't use a specific ID for a new object
