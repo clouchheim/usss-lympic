@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_BATCH_SIZE = 25  # per Teamworks' own sample: start small, raise only after measuring.
+DEFAULT_BASE_URL = "https://usopc.smartabase.com/athlete360-usss"
 
 logger = logging.getLogger("teamworks_client")
 
@@ -27,7 +28,7 @@ class TeamworksAmsError(Exception):
 
 class TeamworksClient:
     def __init__(self, base_url=None, username=None, password=None, app_id=None):
-        self.base_url = (base_url or os.environ["TEAMWORKS_BASE_URL"]).rstrip("/")
+        self.base_url = (base_url or os.environ.get("TEAMWORKS_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
         self.username = username or os.environ["TEAMWORKS_USERNAME"]
         self.password = password or os.environ["TEAMWORKS_PASSWORD"]
         self.app_id = app_id or os.environ.get("TEAMWORKS_APP_ID", "usss.lympik-integration")
