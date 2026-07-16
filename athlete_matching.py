@@ -17,6 +17,7 @@ import re
 
 _TEAMWORKS_FIRST_NAME_KEYS = ["firstName", "first_name", "forename"]
 _TEAMWORKS_LAST_NAME_KEYS = ["lastName", "last_name", "surname"]
+_TEAMWORKS_USER_ID_KEYS = ["userId", "user_id", "id"]
 
 
 def normalize_name(name):
@@ -36,6 +37,10 @@ def teamworks_first_name(athlete):
 
 def teamworks_last_name(athlete):
     return _first_present(athlete, _TEAMWORKS_LAST_NAME_KEYS)
+
+
+def teamworks_user_id(athlete):
+    return _first_present(athlete, _TEAMWORKS_USER_ID_KEYS)
 
 
 def match_athletes(

@@ -28,6 +28,13 @@ class LympikClient:
         response.raise_for_status()
         return response.json() if response.content else None
 
+    def search_activity(self, date_from, data_type="timing"):
+        """GET /profile/{pId}/activity/search -- not in the published OpenAPI
+        spec, reachable via the `activity.search` key scope. Returns a plain
+        list (no offset/size pagination wrapper), unlike most other list
+        endpoints in the documented spec."""
+        return self.get(f"/profile/{self.profile_id}/activity/search", params={"dateFrom": date_from, "dataType": data_type})
+
     def get_all_pages(self, path, params=None, size=100):
         """Follows the offset/size pagination used by list endpoints,
         yielding every record across all pages."""
