@@ -65,8 +65,11 @@ the pipeline needs to change, since `run()` already takes
    them against.
 3. Athletes within the event are grouped **by name** (`firstName`+`lastName`),
    matched against Teamworks via `athlete_matching.match_athletes()`'s
-   last-name → first-initial → full-first-name cascade. Unmatched athletes are
-   logged as errors (with event id) and skipped, never guessed.
+   full-name → last-name → first-initial → full-first-name cascade (an exact
+   first+last match is taken immediately when it's unique; only an
+   unresolved/absent full-name match falls through to the last-name-first
+   cascade). Unmatched athletes are logged as errors (with event id) and
+   skipped, never guessed.
 4. Each matched athlete's runs are sorted earliest→latest, numbered into
    `Run #` (1-indexed), and built into one event payload — event-level fields
    in `row: 0`, one table row per run after that.
