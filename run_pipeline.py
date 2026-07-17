@@ -3,24 +3,18 @@
 Scheduling/interval is left to whatever runs this script (cron, a scheduled
 task, etc.) -- this module is a single run.
 
-STOPGAP, READ BEFORE RUNNING ON A SCHEDULE: this needs to know which
-(Lympik event, Teamworks athlete) pairs already have a "Lympik Event" entry
-in Teamworks, so we never upload the same athlete's session twice. There's
-no confirmed Teamworks endpoint for listing existing form entries (see
-PIPELINE.md) -- until there is, this uses a local JSON ledger (see
-_load_ledger/_add_to_ledger below) as the source of truth instead. That's
-real duplicate protection for repeated runs of *this script*, but it is not
-the same as querying Teamworks directly, and it won't know about "Lympik
-Event" entries created any other way.
-
-The ledger is keyed per (event id, athlete), not per whole event: an early
-version keyed it per whole event and failed a real test -- when one athlete
-in an event failed to upload (while others in the same event succeeded), the
-whole event was left off the ledger so it would retry, which would have
-re-uploaded the athletes who *had* already succeeded as brand new duplicate
-entries (there's no existingEventId tracking to turn a retry into an update
-instead). Per-athlete ledgering means a retry only re-attempts the athlete(s)
-that actually failed.
+Duplicate protection: before uploading, run() asks Teamworks itself which
+(Lympik event, Teamworks athlete) pairs already have a "Lympik Event" entry,
+via TeamworksClient.find_existing_event_ids() (POST /api/v1/synchronise,
+matching our own "Event ID" row-0 field against the event ids this run is
+about to process). This replaced an earlier local JSON ledger stopgap --
+querying Teamworks directly means no local state file to lose or fall out
+of sync, and it also sees entries created any other way (a manual entry, a
+different script). See PIPELINE.md for why the ledger existed and how this
+replaced it, and docs/teamworks-api-reference.md for the endpoint itself.
+Since this endpoint's response shape isn't yet confirmed against this
+specific AMS instance, every call dumps its raw response to
+debug_payloads/synchronise_response.json for verification.
 """
 
 import json
@@ -40,7 +34,7 @@ from lympik_client import LympikClient
 from teamworks_client import TeamworksClient
 
 FORM_NAME = "Lympik Event"
-LEDGER_PATH = Path("uploaded_events.json")
+EVENT_ID_FIELD = "Event ID"
 DEBUG_DUMP_DIR = Path("debug_payloads")
 
 RUNS_DF_COLUMNS = [
@@ -70,20 +64,6 @@ def _stringify(value):
 def _unix_to_ams_date_time(unix_ts, tz):
     dt = datetime.fromtimestamp(unix_ts, tz=tz)
     return dt.strftime("%d/%m/%Y"), dt.strftime("%I:%M %p").lstrip("0")
-
-
-def _load_ledger():
-    """Returns the set of (event_id, teamworks_user_id) pairs already
-    successfully uploaded."""
-    if not LEDGER_PATH.exists():
-        return set()
-    return {tuple(pair) for pair in json.loads(LEDGER_PATH.read_text())}
-
-
-def _add_to_ledger(pairs):
-    ledger = _load_ledger()
-    ledger.update(pairs)
-    LEDGER_PATH.write_text(json.dumps(sorted(list(pair) for pair in ledger), indent=2))
 
 
 def build_runs_dataframe(lympik_client, event_id):
@@ -174,6 +154,25 @@ def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, even
 
     path = DEBUG_DUMP_DIR / f"{event_id}__{teamworks_user_id_value}.json"
     path.write_text(json.dumps(dump, indent=2, default=str))
+
+
+def _write_debug_synchronise_response(raw_responses, existing_pairs):
+    """Dumps the raw /api/v1/synchronise response(s) used for duplicate
+    detection this run, plus what we parsed out of them -- this endpoint's
+    response shape is confirmed against a different AMS org, not this one,
+    so this is the way to confirm/fix event_id/user_id extraction if
+    find_existing_event_ids() isn't finding what it should."""
+    DEBUG_DUMP_DIR.mkdir(exist_ok=True)
+    dump = {
+        "_pipeline_note": (
+            "Debug dump only. Raw POST /api/v1/synchronise response(s) used to find "
+            "which (event, athlete) pairs already exist in Teamworks this run, plus "
+            "what find_existing_event_ids() parsed out of them."
+        ),
+        "raw_responses": raw_responses,
+        "parsed_existing_pairs": sorted(existing_pairs),
+    }
+    (DEBUG_DUMP_DIR / "synchronise_response.json").write_text(json.dumps(dump, indent=2, default=str))
 
 
 def _build_rows_payload(event_fields, athlete_runs_df):
@@ -285,12 +284,7 @@ def build_athlete_payloads(lympik_client, teamworks_athletes, event_id, tz):
     return payloads
 
 
-def run(lympik_client, teamworks_client, since_unix, already_uploaded_pairs, tz):
-    """already_uploaded_pairs has no default: callers must pass it explicitly
-    (an empty set is fine for a first manual test) so a real gap in
-    duplicate protection is never silent. Each item is an (event_id,
-    teamworks_user_id) pair already successfully uploaded -- see module
-    docstring re: the local-ledger stopgap in main()."""
+def run(lympik_client, teamworks_client, since_unix, tz):
     event_ids = get_recent_event_ids(lympik_client, since_unix)
     logger.info("%d recent event(s) in window", len(event_ids))
 
@@ -303,8 +297,28 @@ def run(lympik_client, teamworks_client, since_unix, already_uploaded_pairs, tz)
         except Exception:
             logger.exception("event %s: failed to prepare, will retry next run", event_id)
 
-    pending = [p for p in all_payloads if (p["event_id"], p["teamworks_user_id"]) not in already_uploaded_pairs]
-    logger.info("%d athlete-session(s) to upload (%d already in the ledger)", len(pending), len(all_payloads) - len(pending))
+    if not all_payloads:
+        logger.info("nothing to upload")
+        return
+
+    # Ask Teamworks itself which of these (event, athlete) pairs already
+    # have a "Lympik Event" entry -- see module docstring. start_date is
+    # the earliest date any of this run's events could fall on, per the
+    # same lookback window used to find them.
+    start_date, _ = _unix_to_ams_date_time(since_unix, tz)
+    existing_pairs, raw_synchronise_responses = teamworks_client.find_existing_event_ids(
+        form_name=FORM_NAME,
+        start_date=start_date,
+        user_ids=sorted({p["teamworks_user_id"] for p in all_payloads}),
+        event_id_field=EVENT_ID_FIELD,
+        candidate_event_ids={p["event_id"] for p in all_payloads},
+    )
+    _write_debug_synchronise_response(raw_synchronise_responses, existing_pairs)
+
+    pending = [p for p in all_payloads if (str(p["event_id"]), str(p["teamworks_user_id"])) not in existing_pairs]
+    logger.info(
+        "%d athlete-session(s) to upload (%d already in Teamworks)", len(pending), len(all_payloads) - len(pending)
+    )
 
     # Oldest-first, per Teamworks' own eventsimport sample ("minimise
     # re-running historical calcs").
@@ -319,12 +333,6 @@ def run(lympik_client, teamworks_client, since_unix, already_uploaded_pairs, tz)
             logger.error("event %s: upload failed for %s: %s", payload["event_id"], athlete_label, error)
         else:
             logger.info("event %s: uploaded %s -> Teamworks event %s", payload["event_id"], athlete_label, teamworks_event_id)
-            # Recorded immediately, one success at a time, rather than
-            # batched until every result is logged: if anything after this
-            # point raises, an already-successful upload must not be lost
-            # from the ledger, or the next run would re-upload it as a
-            # brand new duplicate "Lympik Event" entry.
-            _add_to_ledger([(payload["event_id"], payload["teamworks_user_id"])])
 
 
 def main():
@@ -337,7 +345,6 @@ def main():
         lympik_client=LympikClient(),
         teamworks_client=TeamworksClient(),
         since_unix=since_unix,
-        already_uploaded_pairs=_load_ledger(),
         tz=tz,
     )
 
