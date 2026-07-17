@@ -95,7 +95,7 @@ def build_runs_dataframe(lympik_client, event_id):
                 "Split 1": splits.get(0),
                 "Split 2": splits.get(1),
                 "Split 3": splits.get(2),
-                "Run Time": group.get("totalDuration"),
+                "run_time": group.get("totalDuration"),
                 "DNF": group.get("invalid") == "user_dnf",
             }
         )
@@ -141,7 +141,7 @@ def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, even
                 "Run ID": "group['id']",
                 "Run Start unix Time": "group['startedAt']",
                 "Split 1/2/3": "group['edges'], matched by edge['sequence'] == 0/1/2, value is edge['duration']",
-                "Run Time": "group['totalDuration']",
+                "run_time": "group['totalDuration']",
                 "DNF": "group['invalid'] == 'user_dnf'",
             },
             "data": athlete_runs_df.to_dict("records"),
@@ -188,7 +188,7 @@ def _build_rows_payload(event_fields, athlete_runs_df):
                     {"key": "Split 1", "value": _stringify(run["Split 1"])},
                     {"key": "Split 2", "value": _stringify(run["Split 2"])},
                     {"key": "Split 3", "value": _stringify(run["Split 3"])},
-                    {"key": "Run Time", "value": _stringify(run["Run Time"])},
+                    {"key": "run_time", "value": _stringify(run["run_time"])},
                     {"key": "DNF", "value": _stringify(run["DNF"])},
                 ],
             }
