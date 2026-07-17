@@ -3,4 +3,4 @@ samples/
 __pycache__/
 *.pyc
 .venv/
-uploaded_events.json
+debug_payloads/

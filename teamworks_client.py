@@ -67,6 +67,92 @@ class TeamworksClient:
             if not cursor:
                 return users
 
+    def find_existing_event_ids(self, form_name, start_date, user_ids, event_id_field, candidate_event_ids):
+        """Which (event id, Teamworks user id) pairs already have a
+        `form_name` entry in Teamworks on/after start_date, for the given
+        user_ids -- queried fresh from Teamworks itself every run instead of
+        trusting a separately maintained ledger file.
+
+        Confirmed working shape via a sibling Teamworks AMS integration
+        (different org, same v1 API family): POST /api/v1/synchronise with
+        {"formName", "startDate", "userIds"}, paginated via
+        {"pagination": {"paginate": True, "cursor": ...}} on every page
+        after the first, response events under body["export"]["events"].
+        Not yet confirmed against this specific AMS instance -- every call
+        here dumps its raw response to debug_payloads/synchronise_response.json
+        (see run_pipeline.py) so a shape mismatch can be caught and fixed
+        instead of silently returning nothing.
+
+        userIds is mandatory on this endpoint: omitting it returns no
+        events for anyone, not "all events" -- so empty user_ids or
+        candidate_event_ids always short-circuits rather than risking a
+        call that would silently mean something different than intended.
+
+        event_id_field is the row-0 field name holding our event id (e.g.
+        "Event ID") -- checked first on each returned event.
+        candidate_event_ids is the specific set of ids being asked about
+        this run; if the row-0 lookup doesn't land on one of them, every
+        string leaf in the event is checked against the same set as a
+        fallback, since these are distinctive UUIDs unlikely to appear by
+        accident.
+
+        Returns (found, raw_responses): found is a set of
+        (str(event_id), str(teamworks_user_id)) pairs -- both sides
+        stringified since this endpoint's id types aren't confirmed to
+        match usersynchronise's exactly. raw_responses is the list of raw
+        response bodies (one per page), for the caller to dump for
+        inspection.
+        """
+        candidate_ids = {str(cid) for cid in candidate_event_ids}
+        if not candidate_ids or not user_ids:
+            return set(), []
+
+        found = set()
+        raw_responses = []
+        cursor = None
+        base_body = {
+            "formName": form_name,
+            "startDate": start_date,
+            "userIds": sorted(user_ids),
+        }
+        while True:
+            body = dict(base_body)
+            if cursor:
+                body["pagination"] = {"paginate": True, "cursor": cursor}
+
+            response = self.session.post(
+                f"{self.base_url}/api/v1/synchronise",
+                params={"informat": "json", "format": "json"},
+                json=body,
+                timeout=30,
+            )
+            response.raise_for_status()
+            page = response.json()
+            raw_responses.append(page)
+
+            export = page.get("export") or {}
+            for event in export.get("events", []):
+                event_id = _extract_field_value(event, event_id_field)
+                if str(event_id) not in candidate_ids:
+                    event_id = next((v for v in _walk_strings(event) if v in candidate_ids), None)
+                user_id = _event_user_id(event)
+                if event_id is not None and user_id is not None:
+                    found.add((str(event_id), str(user_id)))
+
+            cursor = page.get("cursor") or export.get("cursor")
+            if not cursor:
+                break
+
+        events_seen = sum(len((p.get("export") or {}).get("events", [])) for p in raw_responses)
+        if events_seen and not found:
+            logger.warning(
+                "synchronise returned %d event(s) for these users but none matched a known "
+                "event id/user id shape -- check debug_payloads/synchronise_response.json",
+                events_seen,
+            )
+
+        return found, raw_responses
+
     def bulk_import_events(self, events, batch_size=DEFAULT_BATCH_SIZE):
         """POSTs /api/v1/eventsimport in batches of `batch_size`.
 
@@ -164,3 +250,37 @@ def _find_user_list(response_json):
         if isinstance(value, list) and (not value or isinstance(value[0], dict)):
             return value
     return []
+
+
+def _extract_field_value(event, field_name):
+    """Row 0 holds event-level fields (Event ID, Session Name, ...) --
+    confirmed shape for eventimport/eventsimport requests; assumed
+    symmetric for synchronise responses until confirmed otherwise."""
+    for row in event.get("rows", []):
+        if row.get("row") == 0:
+            for pair in row.get("pairs", []):
+                if pair.get("key") == field_name:
+                    return pair.get("value")
+    return None
+
+
+def _walk_strings(node):
+    """Yield every string leaf value in an arbitrarily nested dict/list --
+    fallback for locating a known id when the row-0 shape doesn't apply."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _walk_strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk_strings(item)
+
+
+def _event_user_id(event):
+    """userId comes back as {"userId": N} in every request shape this
+    client sends -- try that first, then a bare value as a fallback."""
+    raw = event.get("userId")
+    if isinstance(raw, dict):
+        return raw.get("userId")
+    return raw

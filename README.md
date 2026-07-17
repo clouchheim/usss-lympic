@@ -21,11 +21,15 @@ one "Lympik Event" form entry per athlete per training session.
    - For each matched athlete, sort their runs oldest-to-newest, number them
      `Run #`, and build one Teamworks event payload: the session's shared fields
      in row 0, one table row per run after that.
-4. **Skip anything already uploaded.** Every (event, athlete) pair that
-   previously succeeded is recorded in a local ledger file
-   (`uploaded_events.json`) so it's never re-uploaded on a later run. See
-   "Known limitations" below — this is a stopgap, not a query against Teamworks
-   itself.
+4. **Skip anything already uploaded.** Before uploading, the pipeline asks
+   Teamworks itself which (event, athlete) pairs already have a "Lympik
+   Event" entry (`POST /api/v1/synchronise`, matching on the "Event ID"
+   field every upload writes into row 0) and skips those. No local state
+   file — Teamworks is the source of truth, queried fresh every run. See
+   PIPELINE.md for the one open item here: this endpoint's exact response
+   shape is confirmed against a different Teamworks org, not yet against
+   this one -- check `debug_payloads/synchronise_response.json` after a
+   real run to confirm.
 5. **Upload.** All the pending athlete-events across every Lympik event in this
    run are batched together and sent to Teamworks' `/api/v1/eventsimport` in
    groups of 25. That endpoint fails an entire batch if even one event in it is
@@ -49,8 +53,9 @@ python run_pipeline.py
 ```
 
 Each run does **one pass**: it looks back 24 hours from "now" and processes
-whatever it finds. Running it again immediately is safe (the ledger prevents
-duplicates) but pointless unless new sessions have happened. Actual scheduling
+whatever it finds. Running it again immediately is safe (Teamworks itself is
+checked for what's already there) but pointless unless new sessions have
+happened. Actual scheduling
 (the "run this every N minutes/hours" part) is intentionally not baked into the
 script — wire it up however fits where you're running it:
 
@@ -84,15 +89,12 @@ jobs:
           TEAMWORKS_USERNAME: ${{ secrets.TEAMWORKS_USERNAME }}
           TEAMWORKS_PASSWORD: ${{ secrets.TEAMWORKS_PASSWORD }}
 ```
-One catch with GitHub Actions specifically: the ledger (`uploaded_events.json`) only
-lives on the runner's disk, which is thrown away after each job. Without persisting
-it (e.g. `actions/cache`, or committing it back, or a small storage step), every
-scheduled run would start with an empty ledger and treat the whole 24-hour lookback
-window as brand new -- that's real risk of duplicate uploads on GitHub Actions
-specifically, worth solving before relying on it there.
+No ledger-persistence concern on GitHub Actions (or anywhere else): duplicate
+detection is a live Teamworks query on every run, not a state file that could
+be lost on an ephemeral runner disk.
 
-I haven't created the workflow file itself since that wasn't asked for -- say the
-word and I'll add it for real, including the ledger-persistence piece.
+I haven't created the workflow file itself since that wasn't asked for -- say
+the word and I'll add it for real.
 
 ### Secrets you need in `.env`
 
@@ -112,14 +114,17 @@ needs changing if you have a specific reason to.
 **The actual pipeline:**
 - `run_pipeline.py` — the entry point (`python run_pipeline.py`). Everything
   described in "The flow" above lives here: pulling event data, building the
-  per-athlete runs table, matching, batching, uploading, and the local ledger.
+  per-athlete runs table, matching, checking Teamworks for what's already
+  there, and uploading.
 - `lympik_client.py` — Lympik API client. Handles auth (HTTP Basic, profile
   UUID + API key) and generic GET/pagination, plus `search_activity()` for the
   event-discovery endpoint.
 - `lympik_activity.py` — turns an activity-search response into a deduplicated
   list of event ids (step 1 of the flow).
 - `teamworks_client.py` — Teamworks AMS API client. `list_athletes()` walks the
-  paginated user-sync endpoint; `bulk_import_events()` submits events in
+  paginated user-sync endpoint; `find_existing_event_ids()` queries which
+  (event, athlete) pairs already have a "Lympik Event" entry
+  (`POST /api/v1/synchronise`); `bulk_import_events()` submits events in
   batches and handles the all-or-nothing-per-batch failure mode by retrying
   individually.
 - `athlete_matching.py` — the name-matching cascade (last name → first initial
@@ -128,11 +133,10 @@ needs changing if you have a specific reason to.
   (`firstName`/`first_name`/`forename`, etc.).
 
 **Reference docs:**
-- `PIPELINE.md` — the detailed design doc: what's solved vs. still a stopgap,
-  two real bugs that testing caught before they shipped, and open questions
-  (most importantly: there's still no confirmed Teamworks endpoint to query
-  existing form entries, so duplicate protection currently depends entirely on
-  `uploaded_events.json` surviving between runs).
+- `PIPELINE.md` — the detailed design doc: what's solved, real bugs that
+  testing caught before they shipped, and the one open question left
+  (confirming `/api/v1/synchronise`'s exact response shape against this AMS
+  instance, currently only confirmed against a different org's).
 - `docs/teamworks-api-reference.md` — the Teamworks v1 API endpoints this
   project uses (`usersynchronise`, `eventimport`, `eventsimport`), cleaned up
   from Teamworks' own reference material.
@@ -144,8 +148,8 @@ needs changing if you have a specific reason to.
 **Config:**
 - `.env.example` — template for `.env`. Copy it, fill in the four secrets above.
 - `requirements.txt` — `requests`, `python-dotenv`, `pandas`.
-- `.gitignore` — keeps `.env`, `uploaded_events.json`, and old exploration
-  output (`samples/`) out of version control.
+- `.gitignore` — keeps `.env`, `debug_payloads/`, and old exploration output
+  (`samples/`) out of version control.
 
 **Earlier exploration, not part of the live pipeline:**
 - `explore_payloads.py` — the very first script in this project, from before
@@ -170,7 +174,18 @@ the cron example above) for:
   that actually failed -- these need a human to look at (fix the roster
   mismatch, or investigate the failure reason in the log message).
 
-`uploaded_events.json` in the working directory is the ledger -- delete it
-only if you deliberately want to force a full re-upload of everything in the
-current lookback window (24 hours), since Teamworks has no way to tell you
-what's already there.
+`debug_payloads/` (in the working directory) gets one JSON file per matched
+athlete-event on every run -- the exact payload sent to Teamworks, the raw
+Lympik data it came from, and a note on which field came from where. Useful
+for tracking down a wrong value or a value landing in the wrong column
+without guessing; each file is overwritten the next time that same
+(event, athlete) pair is processed, so it's a snapshot of the latest run,
+not a history.
+
+`debug_payloads/synchronise_response.json` shows the raw response(s) from the
+duplicate-detection query and what got parsed out of them -- check this if
+uploads are being skipped that shouldn't be (or not skipped when they should
+be), since this endpoint's exact shape is only confirmed against a different
+Teamworks org so far (see PIPELINE.md). A `WARNING` log line will also say so
+directly if Teamworks returns entries that don't parse into a recognized
+shape.
