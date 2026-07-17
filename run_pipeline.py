@@ -251,7 +251,7 @@ def run(lympik_client, teamworks_client, since_unix, already_uploaded_pairs, tz)
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    since_unix = time.time() - 86400
+    since_unix = int(time.time() - 86400)
     tz = ZoneInfo(os.environ.get("PIPELINE_TIMEZONE", "America/Denver"))
 
     run(

@@ -84,6 +84,15 @@ class TeamworksClient:
         doesn't block its batch-mates and the caller learns exactly which
         event failed and why.
 
+        Teamworks can also report a batch as SUCCESSFULLY_IMPORTED while
+        silently returning fewer ids than events submitted (seen in practice
+        for a userId Teamworks can't actually deliver a "Lympik Event" entry
+        to) -- there's no per-event error for this, just a shorter list. That
+        id-count mismatch is treated the same as a batch failure: retried
+        individually so the caller learns exactly which event didn't
+        actually go through, instead of silently misaligning results by
+        position.
+
         Returns a list of (event, event_id, error) tuples, one per input
         event, in the same order as `events` -- event_id is the resulting
         Teamworks event id on success and None on failure, error is the
@@ -94,20 +103,39 @@ class TeamworksClient:
         for start in range(0, len(events), batch_size):
             batch = events[start : start + batch_size]
             indices = range(start, start + len(batch))
+
+            batch_ids = None
             try:
                 batch_ids = self._post_eventsimport(batch)
-                for idx, event_id in zip(indices, batch_ids):
-                    results[idx] = (events[idx], event_id, None)
             except TeamworksAmsError:
                 logger.warning(
                     "batch of %d event(s) failed as a whole, retrying individually to isolate the cause", len(batch)
                 )
-                for idx in indices:
-                    try:
-                        single_result_ids = self._post_eventsimport([events[idx]])
-                        results[idx] = (events[idx], single_result_ids[0], None)
-                    except TeamworksAmsError as exc:
-                        results[idx] = (events[idx], None, exc)
+
+            if batch_ids is not None and len(batch_ids) != len(batch):
+                logger.warning(
+                    "batch of %d event(s) reported success but returned %d id(s) -- "
+                    "at least one event was silently dropped, retrying individually to isolate which",
+                    len(batch),
+                    len(batch_ids),
+                )
+                batch_ids = None
+
+            if batch_ids is not None:
+                for idx, event_id in zip(indices, batch_ids):
+                    results[idx] = (events[idx], event_id, None)
+                continue
+
+            for idx in indices:
+                try:
+                    single_result_ids = self._post_eventsimport([events[idx]])
+                    if len(single_result_ids) != 1:
+                        raise TeamworksAmsError(
+                            f"expected exactly 1 id for a single-event import, got {single_result_ids!r}"
+                        )
+                    results[idx] = (events[idx], single_result_ids[0], None)
+                except TeamworksAmsError as exc:
+                    results[idx] = (events[idx], None, exc)
 
         return results
 
