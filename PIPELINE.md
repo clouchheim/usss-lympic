@@ -81,12 +81,20 @@ the pipeline needs to change, since `run()` already takes
    fails the whole batch with no indication which one — so a batch failure
    automatically retries every event in it individually to isolate the cause;
    confirmed by test (see below).
-6. Only athlete-events that actually succeeded get added to the ledger.
+6. Only athlete-events that actually succeeded get added to the ledger, one at
+   a time as each result is logged (not batched until the whole run finishes)
+   — see "Bugs found during testing" below for why.
+7. Every matched athlete's built payload is also written to
+   `debug_payloads/{event_id}__{teamworks_user_id}.json` (gitignored),
+   alongside the raw Lympik data it was built from and a note on where each
+   field came from. Written on every run, win or lose — a debugging aid for
+   tracing a wrong value or column back to its source, not part of the
+   upload path itself.
 
 ## Bugs found during testing
 
-Both of these were caught by testing against mock servers seeded with your real
-sample data, before either shipped:
+Caught by testing against mock servers seeded with your real sample data,
+before any of these shipped:
 
 1. **Grouping runs by Lympik profile id instead of name.** Safer in theory
    against two *different* athletes sharing a name — but your sample data
@@ -107,6 +115,24 @@ sample data, before either shipped:
    `(event_id, teamworks_user_id)` pair, confirmed with a two-run test: only
    the previously-failed athlete gets re-attempted, the already-succeeded one
    is correctly skipped.
+3. **A lone last-name candidate skipped first-name verification entirely.**
+   `athlete_matching.match_athletes()`'s narrowing loop only ran when the
+   last-name pool had *more than one* candidate — if only one Teamworks
+   athlete shared a last name, it was accepted immediately, without ever
+   comparing first names. In production this matched a nonexistent Lympik
+   athlete ("RTS2 USSS", no Teamworks record) straight onto the one
+   Teamworks athlete who happened to share a last name ("RTS1 USSS"),
+   uploading RTS2's runs as a second, wrongly-attributed entry under RTS1's
+   profile. Fixed: a lone last-name candidate is now always checked against
+   the Lympik first name over however many letters both names have, and
+   rejected (left unmatched) if they disagree — confirmed by test.
+4. **A batch reporting success while missing a lost upload could vanish from
+   the ledger on a crash.** The ledger used to be written once, after every
+   result in a run was logged; an exception partway through that logging
+   (or the process dying) meant already-successful uploads were never
+   recorded, so the next run would re-upload them as duplicates. Fixed:
+   each success is written to the ledger immediately, one at a time, as
+   soon as it's logged.
 
 ## Open questions before running this for real
 

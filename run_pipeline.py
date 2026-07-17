@@ -41,6 +41,7 @@ from teamworks_client import TeamworksClient
 
 FORM_NAME = "Lympik Event"
 LEDGER_PATH = Path("uploaded_events.json")
+DEBUG_DUMP_DIR = Path("debug_payloads")
 
 RUNS_DF_COLUMNS = [
     "firstName",
@@ -88,7 +89,12 @@ def _add_to_ledger(pairs):
 def build_runs_dataframe(lympik_client, event_id):
     """/event/{eId}/alpine-skiing/group -> one row per run. Runs with no
     assigned athlete (profile null/missing -- e.g. an unassigned DNF pulse)
-    are dropped and logged, since there's no athlete to upload them against."""
+    are dropped and logged, since there's no athlete to upload them against.
+
+    Returns (dataframe, raw_groups) -- raw_groups is the unprocessed API
+    response for every run (including dropped ones), kept around purely so
+    build_athlete_payloads() can include it in a debug dump; nothing in the
+    upload path itself uses it."""
     groups = list(lympik_client.get_all_pages(f"/event/{event_id}/alpine-skiing/group"))
 
     rows = []
@@ -114,7 +120,60 @@ def build_runs_dataframe(lympik_client, event_id):
             }
         )
 
-    return pd.DataFrame(rows, columns=RUNS_DF_COLUMNS)
+    return pd.DataFrame(rows, columns=RUNS_DF_COLUMNS), groups
+
+
+def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, event, event_fields, raw_athlete_groups, athlete_runs_df, ams_event):
+    """Dumps exactly what would be (or was) sent to Teamworks for this
+    athlete+event, alongside the raw Lympik data it was built from and a
+    note on where every field came from -- so a mismatch (wrong value,
+    wrong column) can be tracked back to its source without guessing.
+    Written for every matched athlete on every run, regardless of upload
+    outcome; each file is overwritten by the next run that touches the same
+    (event, athlete) pair, since this is a debugging aid, not a record."""
+    DEBUG_DUMP_DIR.mkdir(exist_ok=True)
+
+    dump = {
+        "_pipeline_note": (
+            "Debug dump only -- not uploaded from here. Shows the exact "
+            "eventsimport payload for this athlete+event plus the raw "
+            "Lympik data it was built from, so a wrong value or column can "
+            "be traced back to its source."
+        ),
+        "event_id": event_id,
+        "teamworks_user_id": teamworks_user_id_value,
+        "lympik_athlete_name": f"{lympik_profile['firstName']} {lympik_profile['lastName']}",
+        "raw_lympik_event": {
+            "_source": f"GET /event/{event_id}",
+            "data": event,
+        },
+        "raw_lympik_runs_for_this_athlete": {
+            "_source": f"GET /event/{event_id}/alpine-skiing/group, filtered to this athlete's name",
+            "data": raw_athlete_groups,
+        },
+        "extracted_event_fields": {
+            "_source": "event_fields dict in build_athlete_payloads() -- becomes row 0 of the ams_event payload",
+            "data": event_fields,
+        },
+        "extracted_runs_table": {
+            "_source": "build_runs_dataframe() -- one row per run, becomes rows 1..N of the ams_event payload",
+            "field_sources": {
+                "Run ID": "group['id']",
+                "Run Start unix Time": "group['startedAt']",
+                "Split 1/2/3": "group['edges'], matched by edge['sequence'] == 0/1/2, value is edge['duration']",
+                "Run Time": "group['totalDuration']",
+                "DNF": "group['invalid'] == 'user_dnf'",
+            },
+            "data": athlete_runs_df.to_dict("records"),
+        },
+        "ams_event_payload": {
+            "_source": "the exact dict passed to TeamworksClient.bulk_import_events() for this athlete",
+            "data": ams_event,
+        },
+    }
+
+    path = DEBUG_DUMP_DIR / f"{event_id}__{teamworks_user_id_value}.json"
+    path.write_text(json.dumps(dump, indent=2, default=str))
 
 
 def _build_rows_payload(event_fields, athlete_runs_df):
@@ -154,7 +213,7 @@ def build_athlete_payloads(lympik_client, teamworks_athletes, event_id, tz):
     }
     start_date, start_time = _unix_to_ams_date_time(event["startedAt"], tz)
 
-    runs_df = build_runs_dataframe(lympik_client, event_id)
+    runs_df, raw_groups = build_runs_dataframe(lympik_client, event_id)
     if runs_df.empty:
         logger.info("event %s: no assigned runs, nothing to upload", event_id)
         return []
@@ -196,6 +255,24 @@ def build_athlete_payloads(lympik_client, teamworks_athletes, event_id, tz):
             "userId": {"userId": teamworks_user_id(teamworks_athlete)},
             "rows": _build_rows_payload(event_fields, athlete_runs_df),
         }
+
+        raw_athlete_groups = [
+            g
+            for g in raw_groups
+            if (g.get("profile") or {}).get("firstName") == lympik_profile["firstName"]
+            and (g.get("profile") or {}).get("lastName") == lympik_profile["lastName"]
+        ]
+        _write_debug_payload(
+            event_id,
+            teamworks_user_id(teamworks_athlete),
+            lympik_profile,
+            event,
+            event_fields,
+            raw_athlete_groups,
+            athlete_runs_df,
+            ams_event,
+        )
+
         payloads.append(
             {
                 "event_id": event_id,
@@ -235,7 +312,6 @@ def run(lympik_client, teamworks_client, since_unix, already_uploaded_pairs, tz)
 
     results = teamworks_client.bulk_import_events([p["ams_event"] for p in pending])
 
-    newly_uploaded = []
     for payload, (_, teamworks_event_id, error) in zip(pending, results):
         profile = payload["lympik_profile"]
         athlete_label = f"{profile['firstName']} {profile['lastName']}"
@@ -243,9 +319,12 @@ def run(lympik_client, teamworks_client, since_unix, already_uploaded_pairs, tz)
             logger.error("event %s: upload failed for %s: %s", payload["event_id"], athlete_label, error)
         else:
             logger.info("event %s: uploaded %s -> Teamworks event %s", payload["event_id"], athlete_label, teamworks_event_id)
-            newly_uploaded.append((payload["event_id"], payload["teamworks_user_id"]))
-
-    _add_to_ledger(newly_uploaded)
+            # Recorded immediately, one success at a time, rather than
+            # batched until every result is logged: if anything after this
+            # point raises, an already-successful upload must not be lost
+            # from the ledger, or the next run would re-upload it as a
+            # brand new duplicate "Lympik Event" entry.
+            _add_to_ledger([(payload["event_id"], payload["teamworks_user_id"])])
 
 
 def main():

@@ -95,6 +95,19 @@ def match_athletes(
                 if narrowed:
                     candidates = narrowed
 
+            # A last-name pool that was only ever one athlete never went
+            # through the loop above, so a shared last name alone would
+            # otherwise stand in for actually checking the first name at
+            # all (e.g. "RTS2 Smith" silently matching the sole "RTS1
+            # Smith" in Teamworks). Verify the first name agrees over
+            # however many letters both names actually have, rather than
+            # accepting a lone last-name candidate unconditionally.
+            if len(candidates) == 1:
+                candidate_first = normalize_name(teamworks_first_name_fn(candidates[0]))
+                common_len = min(len(first), len(candidate_first))
+                if first[:common_len] != candidate_first[:common_len]:
+                    candidates = []
+
         if len(candidates) == 1:
             matched.append((profile, candidates[0]))
             claimed.add(id(candidates[0]))

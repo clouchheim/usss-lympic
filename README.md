@@ -144,8 +144,8 @@ needs changing if you have a specific reason to.
 **Config:**
 - `.env.example` — template for `.env`. Copy it, fill in the four secrets above.
 - `requirements.txt` — `requests`, `python-dotenv`, `pandas`.
-- `.gitignore` — keeps `.env`, `uploaded_events.json`, and old exploration
-  output (`samples/`) out of version control.
+- `.gitignore` — keeps `.env`, `uploaded_events.json`, `debug_payloads/`, and
+  old exploration output (`samples/`) out of version control.
 
 **Earlier exploration, not part of the live pipeline:**
 - `explore_payloads.py` — the very first script in this project, from before
@@ -174,3 +174,11 @@ the cron example above) for:
 only if you deliberately want to force a full re-upload of everything in the
 current lookback window (24 hours), since Teamworks has no way to tell you
 what's already there.
+
+`debug_payloads/` (also in the working directory) gets one JSON file per
+matched athlete-event on every run -- the exact payload sent to Teamworks,
+the raw Lympik data it came from, and a note on which field came from where.
+Useful for tracking down a wrong value or a value landing in the wrong
+column without guessing; each file is overwritten the next time that same
+(event, athlete) pair is processed, so it's a snapshot of the latest run,
+not a history.
