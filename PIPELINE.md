@@ -67,9 +67,9 @@ carry (see README) — there's no local state to lose between runs anymore.
 1. `GET /event/{eId}` → `Event ID` / `Session Name` / `Location` / `startedAt unix`
    fields, shared by every athlete's entry for this event.
 2. `GET /event/{eId}/alpine-skiing/group` → one row per run, via
-   `build_runs_dataframe()`. Splits are read from each run's `edges` list by
-   `sequence` (0/1/2 → Split 1/2/3); a run with no `sequence` match is left
-   blank, not zero. Runs with no assigned athlete (`profile` null/missing — an
+   `build_runs_dataframe()`. Sections are read from each run's `edges` list by
+   `sequence` (0/1/2/3/4 → Section 1/2/3/4/5); a run with no `sequence` match is
+   left blank, not zero. Runs with no assigned athlete (`profile` null/missing — an
    unassigned DNF pulse) are dropped and logged, since there's no one to upload
    them against.
 3. Athletes within the event are grouped **by name** (`firstName`+`lastName`),
