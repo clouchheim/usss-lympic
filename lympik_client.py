@@ -38,6 +38,8 @@ class LympikClient:
             f"/profile/{self.profile_id}/activity/search",
             params={"dateFrom": int(date_from), "dataType": data_type},
         )
+        endpoints in the documented spec."""
+        return self.get(f"/profile/{self.profile_id}/activity/search", params={"dateFrom": int(date_from), "dataType": data_type})
 
     def get_all_pages(self, path, params=None, size=100):
         """Follows the offset/size pagination used by list endpoints,
