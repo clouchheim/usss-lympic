@@ -1,13 +1,19 @@
 """Step 3: match Lympik event profiles against the full Teamworks AMS athlete
 roster.
 
-Matching cascade (confirmed workable by a prior AMS integration, see
-docs/teamworks-ams-notes.md): exact last name (case-insensitive) -> narrow by
-first-initial -> narrow by full first name. Known limits, inherited from that
-same integration: no fuzzy/accent normalization, no handling of hyphenated
-names/middle names/suffixes, and a genuine duplicate name still produces an
-ambiguous non-match. If either system can supply a stable id (athlete id,
-DOB), prefer matching on that over name.
+Matching cascade: exact full name (first+last, case-insensitive) first, since
+there's no reason not to take a complete match when one uniquely exists. If
+that doesn't resolve to exactly one athlete, fall back to the cascade
+confirmed workable by a prior AMS integration (see
+docs/teamworks-ams-notes.md): exact last name -> narrow by first-initial ->
+if still ambiguous, keep narrowing by one more letter of the first name at a
+time (2 letters, 3 letters, ...) until either one candidate remains or the
+Lympik-supplied first name runs out of letters to add, whichever comes
+first. Known limits, inherited from that same integration: no fuzzy/accent
+normalization, no handling of hyphenated names/middle names/suffixes, and a
+genuine duplicate name still produces an ambiguous non-match. If either
+system can supply a stable id (athlete id, DOB), prefer matching on that
+over name.
 
 Lympik's profile schema is left as an untyped `object` in its spec, so the
 Lympik-side name getters are passed in by the caller rather than hardcoded.
@@ -58,9 +64,12 @@ def match_athletes(
     cascade resolves to a single candidate.
     """
     by_last_name = {}
+    by_full_name = {}
     for athlete in teamworks_athletes:
-        key = normalize_name(teamworks_last_name_fn(athlete))
-        by_last_name.setdefault(key, []).append(athlete)
+        last_key = normalize_name(teamworks_last_name_fn(athlete))
+        by_last_name.setdefault(last_key, []).append(athlete)
+        full_key = (normalize_name(teamworks_first_name_fn(athlete)), last_key)
+        by_full_name.setdefault(full_key, []).append(athlete)
 
     matched = []
     unmatched_lympik = []
@@ -70,14 +79,21 @@ def match_athletes(
         first = normalize_name(lympik_first_name_fn(profile))
         last = normalize_name(lympik_last_name_fn(profile))
 
-        candidates = by_last_name.get(last, [])
-        if len(candidates) > 1:
-            by_initial = [c for c in candidates if normalize_name(teamworks_first_name_fn(c))[:1] == first[:1]]
-            if len(by_initial) > 1:
-                by_full_first = [c for c in by_initial if normalize_name(teamworks_first_name_fn(c)) == first]
-                candidates = by_full_first
-            else:
-                candidates = by_initial
+        candidates = by_full_name.get((first, last), [])
+        if len(candidates) != 1:
+            candidates = by_last_name.get(last, [])
+            # First initial (k=1), then one more letter at a time, only
+            # while it actually narrows the pool -- stop as soon as one
+            # candidate remains, or once `first` has no more letters to
+            # offer (an empty narrowing means the extra letter didn't
+            # distinguish anyone further, so keep the wider pool rather
+            # than discarding everyone).
+            for k in range(1, len(first) + 1):
+                if len(candidates) <= 1:
+                    break
+                narrowed = [c for c in candidates if normalize_name(teamworks_first_name_fn(c))[:k] == first[:k]]
+                if narrowed:
+                    candidates = narrowed
 
         if len(candidates) == 1:
             matched.append((profile, candidates[0]))
