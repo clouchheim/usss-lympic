@@ -39,6 +39,13 @@ class LympikClient:
             params={"dateFrom": int(date_from), "dataType": data_type},
         )
 
+    def get_alpine_skiing_event(self, event_id):
+        """GET /profile/{pId}/event/{eId}/alpine-skiing -- alpine-skiing-specific
+        event detail (discipline, gate count, vertical drop, weather), distinct
+        from the generic GET /event/{eId} used for name/location/startedAt.
+        Response is wrapped as {"status": ..., "event": {...}}."""
+        return self.get(f"/profile/{self.profile_id}/event/{event_id}/alpine-skiing")
+
     def get_all_pages(self, path, params=None, size=100):
         """Follows the offset/size pagination used by list endpoints,
         yielding every record across all pages."""
