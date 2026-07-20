@@ -66,6 +66,11 @@ carry (see README) — there's no local state to lose between runs anymore.
 
 1. `GET /event/{eId}` → `Event ID` / `Session Name` / `Location` / `startedAt unix`
    fields, shared by every athlete's entry for this event.
+   `GET /profile/{pId}/event/{eId}/alpine-skiing` (via
+   `LympikClient.get_alpine_skiing_event()`) adds the rest of row 0:
+   `discipline` → `api_discipline`, `gateCount` → `Gate Count`, `verticalDrop`
+   → `Vertical Drop`, `airTemperature` → `Air Temp`, `windSpeed` → `Wind Speed`,
+   `humidity` → `Humidity`, `snowTemperature` → `Snow Temp`.
 2. `GET /event/{eId}/alpine-skiing/group` → one row per run, via
    `build_runs_dataframe()`. Sections are read from each run's `edges` list by
    `sequence` (0/1/2/3/4 → Section 1/2/3/4/5); a run with no `sequence` match is
