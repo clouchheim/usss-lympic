@@ -65,7 +65,13 @@ carry (see README) — there's no local state to lose between runs anymore.
 ## Steps 5-6: per-event processing and upload — solved
 
 1. `GET /event/{eId}` → `Event ID` / `Session Name` / `Location` / `startedAt unix`
-   fields, shared by every athlete's entry for this event.
+   fields, shared by every athlete's entry for this event. `GET
+   /profile/{pId}/event/{eId}/alpine-skiing` → alpine-skiing-specific event
+   detail, wrapped as `{"status": ..., "event": {...}}`, mapped into the same
+   row-0 fields: `discipline` → `api_discipline`, `gateCount` → `Gate Count`,
+   `verticalDrop` → `Vertical Drop`, `airTemperature` → `Air Temp`,
+   `windSpeed` → `Wind Speed`, `humidity` → `Humidity`, `snowTemperature` →
+   `Snow Temp`.
 2. `GET /event/{eId}/alpine-skiing/group` → one row per run, via
    `build_runs_dataframe()`. Sections are read from each run's `edges` list by
    `sequence` (0/1/2/3/4 → Section 1/2/3/4/5); a run with no `sequence` match is

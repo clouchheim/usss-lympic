@@ -107,7 +107,7 @@ def build_runs_dataframe(lympik_client, event_id):
     return pd.DataFrame(rows, columns=RUNS_DF_COLUMNS), groups
 
 
-def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, event, event_fields, raw_athlete_groups, athlete_runs_df, ams_event):
+def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, event, alpine_event, event_fields, raw_athlete_groups, athlete_runs_df, ams_event):
     """Dumps exactly what would be (or was) sent to Teamworks for this
     athlete+event, alongside the raw Lympik data it was built from and a
     note on where every field came from -- so a mismatch (wrong value,
@@ -131,12 +131,29 @@ def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, even
             "_source": f"GET /event/{event_id}",
             "data": event,
         },
+        "raw_lympik_alpine_skiing_event": {
+            "_source": f"GET /profile/{{pId}}/event/{event_id}/alpine-skiing",
+            "data": alpine_event,
+        },
         "raw_lympik_runs_for_this_athlete": {
             "_source": f"GET /event/{event_id}/alpine-skiing/group, filtered to this athlete's name",
             "data": raw_athlete_groups,
         },
         "extracted_event_fields": {
             "_source": "event_fields dict in build_athlete_payloads() -- becomes row 0 of the ams_event payload",
+            "field_sources": {
+                "Event ID": "event['id']",
+                "Session Name": "event['name']",
+                "Location": "event['locationName']",
+                "startedAt unix": "event['startedAt']",
+                "api_discipline": "alpine_event['discipline']",
+                "Gate Count": "alpine_event['gateCount']",
+                "Vertical Drop": "alpine_event['verticalDrop']",
+                "Air Temp": "alpine_event['airTemperature']",
+                "Wind Speed": "alpine_event['windSpeed']",
+                "Humidity": "alpine_event['humidity']",
+                "Snow Temp": "alpine_event['snowTemperature']",
+            },
             "data": event_fields,
         },
         "extracted_runs_table": {
@@ -210,11 +227,19 @@ def build_athlete_payloads(lympik_client, teamworks_athletes, event_id, tz):
     few eventsimport batches as possible. Unmatched athletes are logged as
     errors (with the event id) and skipped, never guessed."""
     event = lympik_client.get(f"/event/{event_id}")
+    alpine_event = lympik_client.get_alpine_skiing_event(event_id).get("event") or {}
     event_fields = {
         "Event ID": event["id"],
         "Session Name": event.get("name"),
         "Location": event.get("locationName"),
         "startedAt unix": event.get("startedAt"),
+        "api_discipline": alpine_event.get("discipline"),
+        "Gate Count": alpine_event.get("gateCount"),
+        "Vertical Drop": alpine_event.get("verticalDrop"),
+        "Air Temp": alpine_event.get("airTemperature"),
+        "Wind Speed": alpine_event.get("windSpeed"),
+        "Humidity": alpine_event.get("humidity"),
+        "Snow Temp": alpine_event.get("snowTemperature"),
     }
     start_date, start_time = _unix_to_ams_date_time(event["startedAt"], tz)
 
@@ -272,6 +297,7 @@ def build_athlete_payloads(lympik_client, teamworks_athletes, event_id, tz):
             teamworks_user_id(teamworks_athlete),
             lympik_profile,
             event,
+            alpine_event,
             event_fields,
             raw_athlete_groups,
             athlete_runs_df,
