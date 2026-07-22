@@ -76,7 +76,13 @@ carry (see README) — there's no local state to lose between runs anymore.
    `sequence` (0/1/2/3/4 → Section 1/2/3/4/5); a run with no `sequence` match is
    left blank, not zero. Runs with no assigned athlete (`profile` null/missing — an
    unassigned DNF pulse) are dropped and logged, since there's no one to upload
-   them against.
+   them against. `_compute_event_fastest()` separately scans the *unfiltered*
+   run list (including unassigned runs) for the two remaining row-0 fields:
+   `Fastest Athlete` (the name off the fastest completed run's profile, or
+   `"Anon"` if that run has no profile/name; ties go to the later `startedAt`,
+   since a later run implies a rougher course and so a comparatively faster
+   time) and `Fastest Time` (that run's `totalDuration`, formatted the same
+   as `run_time`).
 3. Athletes within the event are grouped **by name** (`firstName`+`lastName`),
    matched against Teamworks via `athlete_matching.match_athletes()`'s
    full-name → last-name → first-initial → full-first-name cascade (an exact
