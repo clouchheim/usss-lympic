@@ -107,7 +107,29 @@ def build_runs_dataframe(lympik_client, event_id):
     return pd.DataFrame(rows, columns=RUNS_DF_COLUMNS), groups
 
 
-def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, event, alpine_event, event_fields, raw_athlete_groups, athlete_runs_df, ams_event):
+def _compute_event_fastest(raw_groups):
+    """Fastest completed run across the whole event -- every run returned by
+    /event/{eId}/alpine-skiing/group, not just the ones with a Teamworks
+    match, since this is a fact about the event, not about who it's uploaded
+    for. A run with no totalDuration (DNF/invalid) is excluded. Ties go to
+    the later startedAt: a later run means a rougher course and so a
+    comparatively faster time. Returns ("Anon", time) if the fastest run's
+    profile has no name (or no profile at all), or (None, None) if the event
+    has no completed runs."""
+    completed = [g for g in raw_groups if g.get("totalDuration") is not None]
+    if not completed:
+        return None, None
+
+    fastest = min(completed, key=lambda g: (g["totalDuration"], -(g.get("startedAt") or 0)))
+
+    profile = fastest.get("profile") or {}
+    name_parts = [p for p in (profile.get("firstName"), profile.get("lastName")) if p]
+    name = " ".join(name_parts) if name_parts else "Anon"
+
+    return name, fastest["totalDuration"]
+
+
+def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, event, alpine_event, event_fields, raw_groups, raw_athlete_groups, athlete_runs_df, ams_event):
     """Dumps exactly what would be (or was) sent to Teamworks for this
     athlete+event, alongside the raw Lympik data it was built from and a
     note on where every field came from -- so a mismatch (wrong value,
@@ -139,6 +161,10 @@ def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, even
             "_source": f"GET /event/{event_id}/alpine-skiing/group, filtered to this athlete's name",
             "data": raw_athlete_groups,
         },
+        "raw_lympik_all_runs_in_event": {
+            "_source": f"GET /event/{event_id}/alpine-skiing/group, unfiltered -- source for Fastest Athlete/Fastest Time",
+            "data": raw_groups,
+        },
         "extracted_event_fields": {
             "_source": "event_fields dict in build_athlete_payloads() -- becomes row 0 of the ams_event payload",
             "field_sources": {
@@ -153,6 +179,8 @@ def _write_debug_payload(event_id, teamworks_user_id_value, lympik_profile, even
                 "Wind Speed": "alpine_event['windSpeed']",
                 "Humidity": "alpine_event['humidity']",
                 "Snow Temp": "alpine_event['snowTemperature']",
+                "Fastest Athlete": "_compute_event_fastest(raw_groups) -- min totalDuration across all runs in the event, ties broken by later startedAt, 'Anon' if no profile name",
+                "Fastest Time": "_compute_event_fastest(raw_groups) -- the winning run's totalDuration",
             },
             "data": event_fields,
         },
@@ -248,6 +276,10 @@ def build_athlete_payloads(lympik_client, teamworks_athletes, event_id, tz):
         logger.info("event %s: no assigned runs, nothing to upload", event_id)
         return []
 
+    fastest_athlete, fastest_time = _compute_event_fastest(raw_groups)
+    event_fields["Fastest Athlete"] = fastest_athlete
+    event_fields["Fastest Time"] = fastest_time
+
     # Grouped by name, not Lympik profile id: sample data showed the same
     # athlete can appear under two slightly different profile-id strings
     # across runs within one event, which would otherwise split one athlete
@@ -299,6 +331,7 @@ def build_athlete_payloads(lympik_client, teamworks_athletes, event_id, tz):
             event,
             alpine_event,
             event_fields,
+            raw_groups,
             raw_athlete_groups,
             athlete_runs_df,
             ams_event,
